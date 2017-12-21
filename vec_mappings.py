@@ -1,7 +1,52 @@
 import numpy as np
 import os
 from scipy.misc import imread
+import constants
+from io import BytesIO
 
+def load_single_from_binary(data):
+    img = imread(BytesIO(data))
+    im_shape = img.shape
+    if len(im_shape)>2:
+        #convert to gray img
+        # r, g, b = img[:,:,0], img[:,:,1], img[:,:,2]
+        # gray = 0.2989 * r + 0.5870 * g + 0.1140 * b
+        
+        #convert ot gray, faster
+        img = np.mean(img,-1)
+    im_shape = img.shape
+    #if im_shape[0]== 57 and im_shape[1]==300: 
+        # each immage has size 57x300, we have to 
+        # resize images to 64x304, because conv nets work better with 
+        # dimensions divided by 2, we add 4 pixesl at the top
+        # 3 pixesl at the bottom and 2 to left and right
+        # TODO: change it to more automatic way, what if image size will be 
+        # different than 57.300?
+        #im_pad = np.pad(img,((4,3),(2,2)), 'constant', constant_values=(255,))
+        #im_shape = im_pad.shape
+    if im_shape[0]== constants.IMG_RAWHEIGHT and im_shape[1]==constants.IMG_RAWWIDTH:
+        im_pad = np.pad(img,((0,0),(4,4)), 'constant', constant_values=(255,))
+        im_shape = im_pad.shape
+        X = im_pad.flatten()
+        return 1,X
+    else:
+        print('\n-->Image={} with different dimensions then {}*{}, shape={}, skip it'.format(file,constants.IMG_HEIGHT,constants.IMG_WIDTH,im_shape))
+        return 0,0
+
+def load_single(path):
+    with open(path, 'rb') as f:
+        read_data = f.read()
+    success, X = load_single_from_binary(read_data)
+    if (not success):
+        return 0,0,0
+
+    # file with padded text with '_', each captach has 6 char lenght
+    file = path.split('/')[-1]
+    captcha_text = file.split('.')[0].ljust(6,'_')
+    #print(captcha_text)
+
+    Y = map_words2vec(captcha_text)
+    return (1,X,Y)
 
 def load_dataset(folder="./img", max_files=float('inf')):
     
@@ -13,11 +58,10 @@ def load_dataset(folder="./img", max_files=float('inf')):
     N = min(max_files,N)
     
     # stores images #N x 19456 (64*304)
-    X = np.zeros([N, 64*304])
+    X = np.zeros([N, constants.IMG_HEIGHT*constants.IMG_WIDTH])
     
-    # max captcha text = 20chars, at each postion coulb be 0...9A..Za..z_ so 63 different chars
-    # 20x63= 1260
-    Y = np.zeros([N, 20*63])
+    # max captcha text = CAPTCHA_LENGTH chars, at each postion coulb be 0...9A..Za..z_ so 63 different chars
+    Y = np.zeros([N, constants.CAPTCHA_LENGTH*63])
     captchas = list()
     
     
@@ -27,43 +71,14 @@ def load_dataset(folder="./img", max_files=float('inf')):
             break
         
         path=folder+file
-        img = imread(path)
         
-        im_shape = img.shape
+        success, X0, Y0 = load_single(path)
         
-        if len(im_shape)>2:
-            #convert to gray img
-            # r, g, b = img[:,:,0], img[:,:,1], img[:,:,2]
-            # gray = 0.2989 * r + 0.5870 * g + 0.1140 * b
-            
-            #convert ot gray, faster
-            img = np.mean(img,-1)
-    
-        
-        im_shape = img.shape
-    
-        if im_shape[0]== 57 and im_shape[1]==300: 
-            # each immage has size 57x300, we have to 
-            # resize images to 64x304, because conv nets work better with 
-            # dimensions divided by 2, we add 4 pixesl at the top
-            # 3 pixesl at the bottom and 2 to left and right
-            # TODO: change it to more automatic way, what if image size will be 
-            # different than 57.300?
-            im_pad = np.pad(img,((4,3),(2,2)), 'constant', constant_values=(255,))
-            im_shape = im_pad.shape
-        else:
-            print('\n-->Image={} with different dimensions then 57x300, shape={}, skip it'.format(file,im_shape))
+        if (not success):
             continue
-            
-        
-        
         captchas.append(file)
-        # file with padded text with '_', each captach has 20 char lenght
-        captcha_text = file.ljust(20,'_')
-        
-        X[i,:] = im_pad.flatten()
-        Y[i,:] = map_words2vec(captcha_text)
-        
+        X[i,:] = X0
+        Y[i,:] = Y0
         
     return (X,Y,captchas)
    
@@ -79,7 +94,7 @@ def random_batch(X,Y, batch_size=128):
     num_ele = shape_X[0]
     
     if batch_size > num_ele:
-        raise ValueError('Batch cant be larger then X has rows')
+        raise ValueError('Batch cant be larger then X has rows, batch_size={}, num_ele={}'.format(batch_size, num_ele))
         
     
     rand_idx = np.random.choice(num_ele,batch_size, replace=False)
@@ -140,7 +155,7 @@ def map_char2pos(c):
     
 def map_words2vec(word):
     """
-    Maps word of max 20 characters to vector, each character could be
+    Maps word of max CAPTCHA_LENGTH characters to vector, each character could be
     '0...9A...Za...z_'
     char 0 has an index 0
     char A has an index 10 etc.
@@ -178,10 +193,10 @@ def map_words2vec(word):
     
     word_len = len(word)
     
-    vector = np.zeros(20*63)
+    vector = np.zeros(constants.CAPTCHA_LENGTH*63)
     
-    if word_len>20:
-        raise ValueError('Word={} has length={}, words should have length less than 20'.format(word, word_len))
+    if word_len>constants.CAPTCHA_LENGTH:
+        raise ValueError('Word={} has length={}, words should have length up to {}'.format(word, word_len, constants.CAPTCHA_LENGTH))
     
     for i, c in enumerate(word):
         idx=i*63+map_char2pos(c)

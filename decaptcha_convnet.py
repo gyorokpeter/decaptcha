@@ -9,10 +9,24 @@ import numpy as np
 import matplotlib.pyplot as plt
 import vec_mappings as vecmp
 import optparse
+import constants
+import os.path
+
+DISPLAY_STEP = 100 #100
+TRAIN_ITERS = 20000 #20000
+
+TEST_SIZE = 1000 #1000
+TEST_PARTS = 10
+BATCH_SIZE_TRAIN     = 64
+BATCH_SIZE_TRAIN_ACC = 100 #100
+BATCH_SIZE_TEST_ACC  = 100 #100
 
 def prepare_data(img_folder):
-    
+    global x_mean, x_std
+
+    print("loading images...")
     X, Y, captcha_text = vecmp.load_dataset(folder=img_folder)
+    print("loaded images: {}".format(X.shape[0]))
 
     # invert and normalize to [0,1]
     #X =  (255- Xdata)/255.0
@@ -23,8 +37,9 @@ def prepare_data(img_folder):
     x_std = X.std(axis=0)
     X = (X - x_mean) / (x_std + 0.00001)
 
-    test_size = min(1000, X.shape[0])
+    test_size = min(TEST_SIZE, X.shape[0])
     random_idx = np.random.choice(X.shape[0], test_size, replace=False)
+    #print('random_idx:',random_idx)
 
     test_X = X[random_idx, :]
     test_Y = Y[random_idx, :]
@@ -36,10 +51,13 @@ def prepare_data(img_folder):
 
 
 def save_plots(losses, train_acc, test_acc, training_iters,step,plot_title):
-        
+    print("save_plots to {}".format(plot_title))
     # iters_steps
-    iter_steps = [step *
-                k for k in range((training_iters // step) + 1)]
+    
+    print("training_iters=",training_iters)
+    print("step=",step)
+    #iter_steps = [step * k for k in range((training_iters // step) + 1)] #broken?
+    iter_steps = [step * (k+1) for k in range(len(losses))]
 
     imh = plt.figure(1, figsize=(15, 12), dpi=160)
     # imh.tight_layout()
@@ -48,6 +66,8 @@ def save_plots(losses, train_acc, test_acc, training_iters,step,plot_title):
     imh.suptitle(plot_title)
     plt.subplot(311)
     #plt.plot(iter_steps,losses, '-g', label='Loss')
+    print("iter_steps=",iter_steps)
+    print("losses=",losses)
     plt.semilogy(iter_steps, losses, '-g', label='Loss')
     plt.title('Loss function')
     plt.subplot(312)
@@ -71,13 +91,13 @@ def conv2d(img, w, b,acitivation_func='relu'):
     img - tensor
     w - weights
     b - bias
-    '''    
+    '''
 
     if acitivation_func=='elu':
         return tf.nn.elu(tf.nn.bias_add(tf.nn.conv2d(img, w, strides=[1, 1, 1, 1], padding='SAME'), b))
     else:
         return tf.nn.relu(tf.nn.bias_add(tf.nn.conv2d(img, w, strides=[1, 1, 1, 1], padding='SAME'), b))
-    
+
 
 
 def max_pool(img, k):
@@ -93,13 +113,15 @@ def model_2x2con_1con_1FC_weights(img_w, img_h,scale_weights=0.01):
     '''
         # Store layers weight & bias
 
+    fcDim1=constants.IMG_HEIGHT/(2*2*2)
+    fcDim2=constants.IMG_WIDTH/(2*2*2)
     # relu initialization
     init_wc1 = np.sqrt(2.0 / (img_w * img_h)) # ~0.01
     init_wc11 = np.sqrt(2.0 / (3 * 3 * 32)) # ~0.08
     init_wc2 = np.sqrt(2.0 / (3 * 3 * 32)) # ~0.08
     init_wc21 = np.sqrt(2.0 / (3 * 3 * 64)) # ~0.06
     init_wc3 = np.sqrt(2.0 / (3 * 3 * 64))
-    init_wd1 = np.sqrt(2.0 / (8 * 38 * 64)) #~0.01
+    init_wd1 = np.sqrt(2.0 / (fcDim1 * fcDim2 * 64)) #~0.01
     init_out = np.sqrt(2.0 / 1024) #~0.044
 
     #scale_weights = 'sqrt_HE'
@@ -126,9 +148,9 @@ def model_2x2con_1con_1FC_weights(img_w, img_h,scale_weights=0.01):
         'wc3': tf.Variable(init_wc3 * tf.random_normal([3, 3, 64, 64])),
         # fully connected, 64/(2*2*2)=8, 304/(2*2*2)=38 (three max pool k=2)
         # inputs, 1024 outputs
-        'wd1': tf.Variable(init_wd1 * tf.random_normal([8 * 38 * 64, 1024])),
-        # 1024 inputs, 20*63 outputs for one catpcha word (max 20chars)
-        'out': tf.Variable(init_out * tf.random_normal([1024, 20 * 63]))
+        'wd1': tf.Variable(init_wd1 * tf.random_normal([fcDim1 * fcDim2 * 64, 1024])),
+        # 1024 inputs, CAPTCHA_LENGTH*63 outputs for one catpcha word (max CAPTCHA_LENGTH chars)
+        'out': tf.Variable(init_out * tf.random_normal([1024, constants.CAPTCHA_LENGTH * 63]))
     }
 
     bias_scale = 0.01
@@ -139,7 +161,7 @@ def model_2x2con_1con_1FC_weights(img_w, img_h,scale_weights=0.01):
         'bc21': tf.Variable(bias_scale * tf.random_normal([64])),
         'bc3':  tf.Variable(bias_scale * tf.random_normal([64])),
         'bd1':  tf.Variable(bias_scale * tf.random_normal([1024])),
-        'out':  tf.Variable(bias_scale * tf.random_normal([20 * 63]))
+        'out':  tf.Variable(bias_scale * tf.random_normal([constants.CAPTCHA_LENGTH * 63]))
     }
 
     return weights, biases
@@ -153,10 +175,10 @@ def model_2x2con_1con_1FC(_X, _dropout, img_h, img_w, scale_weights=0.01):
 
     img_h - input image height
     img_w - input image width
-    
+
     """
     _weights, _biases = model_2x2con_1con_1FC_weights(img_w, img_h,scale_weights)
-    
+
     # Reshape input picture
     _X = tf.reshape(_X, shape=[-1, img_h, img_w, 1])
 
@@ -207,9 +229,11 @@ def model_3x3con_1FC(_X, _dropout, img_h, img_w, scale_weights=0.1):
 
     img_h - input image height
     img_w - input image width
-    
+
     """
     #scale_weights = 'sqrt_HE'
+    fcDim1=int(constants.IMG_HEIGHT/(2*2*2))
+    fcDim2=int(constants.IMG_WIDTH/(2*2*2))
     init_wc1 = scale_weights
     init_wc11 = scale_weights
     init_wc2 = scale_weights
@@ -220,38 +244,38 @@ def model_3x3con_1FC(_X, _dropout, img_h, img_w, scale_weights=0.1):
     init_out= scale_weights
 
     bias_scale = 0.1
-    
+
     # 3x3 conv, 1 input, 64 outputs
     wc1 = tf.Variable(init_wc1 * tf.random_normal([3, 3, 1, 64]))
     bc1 = tf.Variable(bias_scale * tf.random_normal([64]))
     # 3x3 conv, 64 input, 64 outputs
     wc11 = tf.Variable(init_wc11*tf.random_normal([3, 3, 64, 64]))
     bc11 = tf.Variable(bias_scale * tf.random_normal([64]))
-    
+
     # 3x3 conv, 64 inputs, 96 outputs
     wc2 = tf.Variable(init_wc2 * tf.random_normal([3, 3, 64, 96]))
     bc2 = tf.Variable(bias_scale * tf.random_normal([96]))
     # 3x3 conv, 96 inputs, 96 outputs
     wc21 = tf.Variable(init_wc21*tf.random_normal([3, 3, 96, 96]))
     bc21 = tf.Variable(bias_scale * tf.random_normal([96]))
-    
+
     # 3x3 conv, 64 inputs, 64 outputs
     wc3 = tf.Variable(init_wc3 * tf.random_normal([3, 3, 96, 128]))
     bc3 = tf.Variable(bias_scale * tf.random_normal([128]))
     wc31 = tf.Variable(init_wc3 * tf.random_normal([3, 3, 128, 128]))
     bc31 = tf.Variable(bias_scale * tf.random_normal([128]))
-    
+
     # fully connected, 64/(2*2*2)=8, 304/(2*2*2)=38 (three max pool k=2)
     # inputs, 2048 outputs
     out_size=512
-    wfc1 = tf.Variable(init_wfc1 * tf.random_normal([8 * 38 * 128, out_size]))
+    wfc1 = tf.Variable(init_wfc1 * tf.random_normal([fcDim1 * fcDim2 * 128, out_size]))
     bfc1 = tf.Variable(bias_scale * tf.random_normal([out_size]))
 
-    # 1024 inputs, 20*63 outputs for one catpcha word (max 20chars)
-    wout =  tf.Variable(init_out * tf.random_normal([out_size, 20 * 63]))
-    bout = tf.Variable(bias_scale * tf.random_normal([20 * 63]))
+    # 1024 inputs, CAPTCHA_LENGTH*63 outputs for one catpcha word (max CAPTCHA_LENGTH chars)
+    wout =  tf.Variable(init_out * tf.random_normal([out_size, constants.CAPTCHA_LENGTH * 63]))
+    bout = tf.Variable(bias_scale * tf.random_normal([constants.CAPTCHA_LENGTH * 63]))
 
-    
+
     # Reshape input picture
     _X = tf.reshape(_X, shape=[-1, img_h, img_w, 1])
 
@@ -260,77 +284,91 @@ def model_3x3con_1FC(_X, _dropout, img_h, img_w, scale_weights=0.1):
     conv1 = conv2d(conv1, wc11, bc11)
     # Max Pooling (down-sampling), change input size by factor of 2
     conv1 = max_pool(conv1, k=2)
-    
+
     # Convolution Layer
     conv2 = conv2d(conv1, wc2, bc2)
     conv2 = conv2d(conv2, wc21, bc21)
     # Max Pooling (down-sampling)
     conv2 = max_pool(conv2, k=2)
-    
+
     # Convolution Layer,
     conv3 = conv2d(conv2, wc3, bc3)
     conv3 = conv2d(conv3, wc31, bc31)
     # Max Pooling (down-sampling)
     conv3 = max_pool(conv3, k=2)
-    
+
     # Fully connected layer
     # Reshape conv2 output to fit dense layer input
     fc1 = tf.reshape(conv3, [-1, wfc1.get_shape().as_list()[0]])
     # Relu activation
     fc1 = tf.nn.relu(tf.matmul(fc1, wfc1)+ bfc1)
     fc1 = tf.nn.dropout(fc1, _dropout)  # Apply Dropout
-    
+
     # Output, class prediction
-    out = tf.matmul(fc1, wout)+bout
+    out = tf.add(tf.matmul(fc1, wout), bout, name='pred')
     #out = tf.nn.softmax(out)
     return out
 
 
 
+def save_model(saver, sess, ds_name, scale_weights):
+    print('saving...')
+    save_file = './models/model_{}_init_{}.ckpt'.format(ds_name,scale_weights)
+    save_path = saver.save(sess, save_file)
+    with open("models/best_accuracy.txt", "w") as text_file:
+        text_file.write("{}".format(best_accuracy))
+    print('saving done')
 
-def main(learning_r=0.001, drop=0.7,train_iters=20000,):
+def main(learning_r=0.001, drop=0.7,train_iters=TRAIN_ITERS,):
+    global best_accuracy
 
     print('Learning script with params learning_rate={}, dropout={}, iterations={}'.format(learning_r,drop,train_iters))
-    
-    img_folder = '/home/ksopyla/dev/data/data_07_2016/'
-    #img_folder = '/home/ksirg/dev/data/data_07_2016/'
-    #img_folder = './shared/Captcha/data_07_2016/img/'
+
+    img_folder = 'd:/projects/github/decaptcha/captcha/'
     ds_name = 'data_07_2016'
-    
+
     X,Y,test_X, test_Y = prepare_data(img_folder)
     test_size = test_X.shape[0]
+
+    best_accuracy = 0.0
+    if (os.path.isfile("models/best_accuracy.txt")):
+        with open("models/best_accuracy.txt", "r") as text_file:
+            best_accuracy = float(text_file.readline())
+        print("prev best accuracy: {}".format(best_accuracy))
 
     # Parameters
     learning_rate = learning_r
     dropout = drop  # Dropout, probability to keep units
     training_iters = train_iters  # 15000 is ok
-    batch_size = 64
+    batch_size = BATCH_SIZE_TRAIN #64
 
-    display_step = 100
+    display_step = DISPLAY_STEP
 
     # Network Parameters
-    img_h = 64
-    img_w = 304
+    img_h = constants.IMG_HEIGHT
+    img_w = constants.IMG_WIDTH
     n_input = img_h * img_w  # captcha images has 64x304 size
-    n_classes = 20 * 63  # each word is encoded by 1260 vector
+    n_classes = constants.CAPTCHA_LENGTH * 63  # each word is encoded by 1260 vector
 
 
     # tf Graph input
-    x = tf.placeholder(tf.float32, [None, n_input])
-    y = tf.placeholder(tf.float32, [None, n_classes])
-    keep_prob = tf.placeholder(tf.float32)  # dropout (keep probability)
+    x = tf.placeholder(tf.float32, [None, n_input], 'x')
+    y = tf.placeholder(tf.float32, [None, n_classes], 'y')
+    keep_prob = tf.placeholder(tf.float32, name='keep_prob')  # dropout (keep probability)
 
     # Construct model 1 - not so good, convergence problems
     # scale_weights=0.005
     # pred = model_2x2con_1con_1FC(x, keep_prob,img_h,img_w,scale_weights)
     # model_version = model_2x2con_1con_1FC.__name__
-    
+
 
     # Construct model 2 - much simpler with 3x2 conv layers, dropout only at fc layer
     scale_weights=0.1
     pred = model_3x3con_1FC(x, keep_prob,img_h,img_w,scale_weights)
     model_version = model_3x3con_1FC.__name__
 
+    xMean = tf.constant(x_mean, name="x_mean")
+    xStd = tf.constant(x_std, name="x_std")
 
     cross_entropy = tf.nn.sigmoid_cross_entropy_with_logits(logits=pred, labels=y)
     loss = tf.reduce_mean(cross_entropy)
@@ -340,18 +378,18 @@ def main(learning_r=0.001, drop=0.7,train_iters=20000,):
 
     # Evaluate model
 
-    # pred are in format batch_size,20*63, reshape it in order to have each character prediction
+    # pred are in format batch_size,CAPTCHA_LENGTH*63, reshape it in order to have each character prediction
     # in row, then take argmax of each row (across columns) then check if it is equal
     # original label max indexes
     # then sum all good results and compute mean (accuracy)
 
     #batch, rows, cols
-    p = tf.reshape(pred, [-1, 20, 63])
+    p = tf.reshape(pred, [-1, constants.CAPTCHA_LENGTH, 63])
     # max idx acros the rows
     # max_idx_p=tf.argmax(p,2).eval()
     max_idx_p = tf.argmax(p, 2)
 
-    l = tf.reshape(y, [-1, 20, 63])
+    l = tf.reshape(y, [-1, constants.CAPTCHA_LENGTH, 63])
     # max idx acros the rows
     # max_idx_l=tf.argmax(l,2).eval()
     max_idx_l = tf.argmax(l, 2)
@@ -370,14 +408,18 @@ def main(learning_r=0.001, drop=0.7,train_iters=20000,):
     saver = tf.train.Saver()
 
     # Launch the graph
-    with tf.Session() as sess:
+    config = tf.ConfigProto()
+    config.gpu_options.per_process_gpu_memory_fraction = 0.8
+    with tf.Session(config=config) as sess:
         sess.run(init)
         step = 0
         epoch = 0
         start_epoch = dt.datetime.now()
 
+        trn_acc = 0.0
         # Keep training until reach max iterations
-        while step <= training_iters:
+        #while step <= training_iters:
+        while trn_acc < 1:
             batch_xs, batch_ys, idx = vecmp.random_batch(X, Y, batch_size)
 
             # Fit training using batch data
@@ -393,8 +435,8 @@ def main(learning_r=0.001, drop=0.7,train_iters=20000,):
 
                 #print("acc start {}".format(dt.datetime.now()))
                 # Calculate accuracy on random training samples
-                batch_trainX, batch_trainY, idx = vecmp.random_batch(X, Y,100)
-                
+                batch_trainX, batch_trainY, idx = vecmp.random_batch(X, Y, BATCH_SIZE_TRAIN_ACC)
+
                 trn_acc = sess.run(accuracy, feed_dict={
                             x: batch_trainX, y: batch_trainY, keep_prob: 1.})
                 train_acc.append(trn_acc)
@@ -404,10 +446,10 @@ def main(learning_r=0.001, drop=0.7,train_iters=20000,):
                 batch_loss = sess.run(
                     loss, feed_dict={x: batch_trainX, y: batch_trainY, keep_prob: 1.})
                 losses.append(batch_loss)
-                
-                # Calculate accuracy on random test batch 
-                batch_testX, batch_testY, idx = vecmp.random_batch(test_X, test_Y, 100)
-                
+
+                # Calculate accuracy on random test batch
+                batch_testX, batch_testY, idx = vecmp.random_batch(test_X, test_Y, BATCH_SIZE_TEST_ACC)
+
                 tst_acc = sess.run(accuracy, feed_dict={
                             x: batch_testX, y: batch_testY, keep_prob: 1.})
                 test_acc.append(tst_acc)
@@ -419,41 +461,38 @@ def main(learning_r=0.001, drop=0.7,train_iters=20000,):
 
                 pp = sess.run(pred, feed_dict={
                             x: batch_trainX, y: batch_trainY, keep_prob: 1.})
-                p = tf.reshape(pp, [-1, 20, 63])
+                p = tf.reshape(pp, [-1, constants.CAPTCHA_LENGTH, 63])
                 max_idx_p = tf.argmax(p, 2).eval()
 
                 predicted_word = vecmp.map_vec_pos2words(max_idx_p[batch_idx, :])
 
-                l = tf.reshape(batch_trainY, [-1, 20, 63])
+                l = tf.reshape(batch_trainY, [-1, constants.CAPTCHA_LENGTH, 63])
                 # max idx acros the rows
                 max_idx_l = tf.argmax(l, 2).eval()
                 true_word = vecmp.map_vec_pos2words(max_idx_l[batch_idx, :])
 
                 print("true : {}, predicted {}".format(true_word, predicted_word))
 
+                if (tst_acc > best_accuracy):
+                    best_accuracy = tst_acc
+                    save_model(saver, sess, ds_name, scale_weights)
+
                 epoch += 1
 
             step += 1
-
-            if step % 5000 == 0:
-                print('saving...')
-                #save_file = './models/model_{}_init_{}.ckpt'.format(ds_name,scale_weights)
-                #save_path = saver.save(sess, save_file)
 
         end_epoch = dt.datetime.now()
         print("Optimization Finished, end={} duration={}".format(
             end_epoch, end_epoch - start_epoch))
 
+
         # Calculate accuracy
         print("\n\nStart testing...")
-        parts = 10
-        test_batch_sz= test_size//parts
-        i=0
-        k=0
+        parts = TEST_PARTS
         acc=0.0
         for part in range(parts):
-            i = k
-            k = i+test_batch_sz
+            i = (part*test_size)//parts
+            k = ((part+1)*test_size)//parts
             batch_test_X= test_X[i:k]
             batch_test_Y = test_Y[i:k]
             batch_acc= sess.run(accuracy, feed_dict={x: batch_test_X, y: batch_test_Y, keep_prob: 1.})
@@ -461,29 +500,30 @@ def main(learning_r=0.001, drop=0.7,train_iters=20000,):
 
             print("Batch #{} accuracy= {}, predictions:".format(part,batch_acc))
             pp = sess.run(pred, feed_dict={x: batch_test_X, y: batch_test_Y, keep_prob: 1.})
-            p = tf.reshape(pp, [-1, 20, 63])
+            p = tf.reshape(pp, [-1, constants.CAPTCHA_LENGTH, 63])
             max_idx_p = tf.argmax(p, 2).eval()
-            l = tf.reshape(test_Y, [-1, 20, 63])
+            l = tf.reshape(batch_test_Y, [-1, constants.CAPTCHA_LENGTH, 63])
             # max idx acros the rows
             max_idx_l = tf.argmax(l, 2).eval()
 
-            for k in range(test_batch_sz):
+            for k1 in range(k-i):
 
-                true_word = vecmp.map_vec_pos2words(max_idx_l[k, :])
-                predicted_word = vecmp.map_vec_pos2words(max_idx_p[k, :])
+                true_word = vecmp.map_vec_pos2words(max_idx_l[k1, :])
+                predicted_word = vecmp.map_vec_pos2words(max_idx_p[k1, :])
 
                 got_error = ''
                 if(true_word != predicted_word):
                     got_error = '<--- error'
                 print("true : {}, predicted {} {}".format(
                     true_word, predicted_word, got_error))
-        
+
         acc= acc/parts
         print("Testing Accuracy:{}".format(acc))
 
 
-        plot_title = './plots/captcha_{}_{}_opt_{}_lr_{}_dropout_{}_6l_init_{}_iter_{}.png'.format(ds_name,model_version,opt_alg,learning_rate,dropout,scale_weights,training_iters)
-        save_plots(losses, train_acc, test_acc, training_iters,display_step, plot_title)
+        #step was training_iters
+        plot_title = './plots/captcha_{}_{}_opt_{}_lr_{}_dropout_{}_6l_init_{}_iter_{}.png'.format(ds_name,model_version,opt_alg,learning_rate,dropout,scale_weights,step)
+        save_plots(losses, train_acc, test_acc, step,display_step, plot_title)
 
 
 
@@ -491,16 +531,16 @@ def main(learning_r=0.001, drop=0.7,train_iters=20000,):
 
 if __name__ == "__main__":
     # set command line options
-    
+
     print('in main')
     import sys
     print(sys.argv)
-    
+
     parser = optparse.OptionParser('usage: %prog [options]')
     parser.add_option('-d', '--dropout',
                       dest='dropout',
                       default=0.7,
-                      type='float',                      
+                      type='float',
                       help='dropout')
     parser.add_option('-l', '--learning_rate',
                       dest='learning_rate',
@@ -509,7 +549,7 @@ if __name__ == "__main__":
                       help='optimizer learning rate')
     parser.add_option('-i', '--training_iters',
                       dest='training_iters',
-                      default=20000,
+                      default=TRAIN_ITERS,
                       type='int',
                       help='number of training iteration')
 
@@ -517,10 +557,10 @@ if __name__ == "__main__":
                       dest='activation_func',
                       default='relu',
                       help='relu, elu')
-   
+
     parser.add_option('-f', '--ipython_kernel_log',
-                      dest='iptyhon_kernel', help='ipython kernel log')                        
-                      
+                      dest='iptyhon_kernel', help='ipython kernel log')
+
 
 
 
