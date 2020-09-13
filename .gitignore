@@ -1,3 +1,6 @@
+plots/
+models/
+
 shared/
 .venv/
 public/

@@ -6,8 +6,8 @@ from flask import Flask, request
 from flask_cors import CORS
 
 sess = tf.Session()
-saver = tf.train.import_meta_graph('models/model_data_07_2016_init_0.1.ckpt.meta')
-saver.restore(sess,'models/model_data_07_2016_init_0.1.ckpt')
+saver = tf.train.import_meta_graph(vecmp.model_file_name('data_07_2016', 0.1)+'.meta')
+saver.restore(sess,vecmp.model_file_name('data_07_2016', 0.1))
 myX = np.zeros([1, constants.IMG_HEIGHT*constants.IMG_WIDTH])
 
 graph = tf.get_default_graph()

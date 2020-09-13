@@ -3,6 +3,7 @@ A Convolutional Network implementation example using TensorFlow library.
 Author: ksopyla (krzysztofsopyla@gmail.com)
 '''
 
+print('imports...')
 import tensorflow as tf
 import datetime as dt
 import numpy as np
@@ -11,6 +12,8 @@ import vec_mappings as vecmp
 import optparse
 import constants
 import os.path
+import random
+print('imports done')
 
 DISPLAY_STEP = 100 #100
 TRAIN_ITERS = 20000 #20000
@@ -20,32 +23,59 @@ TEST_PARTS = 10
 BATCH_SIZE_TRAIN     = 64
 BATCH_SIZE_TRAIN_ACC = 100 #100
 BATCH_SIZE_TEST_ACC  = 100 #100
+#TEST_SIZE = 1 #1000
+#TEST_PARTS = 1
+#BATCH_SIZE_TRAIN     = 1
+#BATCH_SIZE_TRAIN_ACC = 1 #100
+#BATCH_SIZE_TEST_ACC  = 1 #100
 
 def prepare_data(img_folder):
     global x_mean, x_std
 
-    print("loading images...")
-    X, Y, captcha_text = vecmp.load_dataset(folder=img_folder)
-    print("loaded images: {}".format(X.shape[0]))
+    print("loading image names...")
+    imgs = set(os.listdir(img_folder))
+    if (os.path.isfile('models/suspend.txt')):
+        print("loading saved data from suspend.txt...")
+        content = open('models/suspend.txt').read().split('\n')
+        train_imgs = set(content[0].split(' '))
+        trainSize = len(train_imgs)
+        test_imgs = set(content[1].split(' '))
+        x_mean = np.array([np.float64(x) for x in content[2].split(' ')])
+        x_std = np.array([np.float64(x) for x in content[3].split(' ')])
+        print("loading images...")
+        X, Y, captcha_text = vecmp.load_dataset(folder=img_folder, file_list=list(train_imgs)+list(test_imgs))
+        print("loaded images: {}".format(X.shape[0]))
+    else:
+        print('need to figure out parameters...')
+        test_imgs = set(random.sample(imgs, TEST_SIZE))
+        trainSize = len(train_imgs)
+        train_imgs = set(imgs - test_imgs)
+        print("loading images...")
+        X, Y, captcha_text = vecmp.load_dataset(folder=img_folder, file_list=list(train_imgs)+list(test_imgs))
+        print("loaded images: {}".format(X.shape[0]))
+        x_mean = X[:trainSize,:].mean(axis=0)
+        x_std = X[:trainSize,:].std(axis=0)
+        print("saving data to suspend.txt...")
+        with open('models/suspend.txt', 'w') as f:
+            f.write(' '.join(train_imgs) + '\n')
+            f.write(' '.join(test_imgs) + '\n')
+            f.write(' '.join([str(x) for x in x_mean]) + '\n')
+            f.write(' '.join([str(x) for x in x_std]) + '\n')
+
+    print("trainSize = {}".format(trainSize))
 
     # invert and normalize to [0,1]
     #X =  (255- Xdata)/255.0
 
     # standarization
     # compute mean across the rows, sum elements from each column and divide
-    x_mean = X.mean(axis=0)
-    x_std = X.std(axis=0)
     X = (X - x_mean) / (x_std + 0.00001)
 
-    test_size = min(TEST_SIZE, X.shape[0])
-    random_idx = np.random.choice(X.shape[0], test_size, replace=False)
-    #print('random_idx:',random_idx)
+    test_X = X[trainSize:, :]
+    test_Y = Y[trainSize:, :]
 
-    test_X = X[random_idx, :]
-    test_Y = Y[random_idx, :]
-
-    X = np.delete(X, random_idx, axis=0)
-    Y = np.delete(Y, random_idx, axis=0)
+    X = X[:trainSize, :]
+    Y = Y[:trainSize, :]
 
     return (X,Y,test_X,test_Y)
 
@@ -309,22 +339,28 @@ def model_3x3con_1FC(_X, _dropout, img_h, img_w, scale_weights=0.1):
     #out = tf.nn.softmax(out)
     return out
 
-
-
 def save_model(saver, sess, ds_name, scale_weights):
-    print('saving...')
-    save_file = './models/model_{}_init_{}.ckpt'.format(ds_name,scale_weights)
+    save_file = vecmp.model_file_name(ds_name, scale_weights)
+    print('saving to {}'.format(save_file))
     save_path = saver.save(sess, save_file)
     with open("models/best_accuracy.txt", "w") as text_file:
         text_file.write("{}".format(best_accuracy))
     print('saving done')
 
+def load_model(saver, sess, ds_name, scale_weights):
+    save_file = vecmp.model_file_name(ds_name, scale_weights)
+    print('loading from {}'.format(save_file))
+    saver.restore(sess, save_file)
+    print('loading done')
+
 def main(learning_r=0.001, drop=0.7,train_iters=TRAIN_ITERS,):
     global best_accuracy
+    print('in main')
+    newRun = not os.path.isfile('models/suspend.txt')
 
     print('Learning script with params learning_rate={}, dropout={}, iterations={}'.format(learning_r,drop,train_iters))
 
-    img_folder = 'd:/projects/github/decaptcha/captcha/'
+    img_folder = 'd:/projects/github/decaptcha/captcha'
     ds_name = 'data_07_2016'
 
     X,Y,test_X, test_Y = prepare_data(img_folder)
@@ -369,6 +405,7 @@ def main(learning_r=0.001, drop=0.7,train_iters=TRAIN_ITERS,):
 
     xMean = tf.constant(x_mean, name="x_mean")
     xStd = tf.constant(x_std, name="x_std")
+    doneIters = tf.Variable(0, name="doneIters")
 
     cross_entropy = tf.nn.sigmoid_cross_entropy_with_logits(logits=pred, labels=y)
     loss = tf.reduce_mean(cross_entropy)
@@ -412,14 +449,25 @@ def main(learning_r=0.001, drop=0.7,train_iters=TRAIN_ITERS,):
     config.gpu_options.per_process_gpu_memory_fraction = 0.8
     with tf.Session(config=config) as sess:
         sess.run(init)
-        step = 0
         epoch = 0
         start_epoch = dt.datetime.now()
 
         trn_acc = 0.0
-        # Keep training until reach max iterations
-        #while step <= training_iters:
+        if newRun:
+            step = 0
+        else:
+            load_model(saver, sess, 'suspend', scale_weights)
+            graph = tf.get_default_graph()
+            doneIters = graph.get_tensor_by_name('doneIters:0')
+            step = sess.run(doneIters)
+        with open('delete_to_halt.txt', 'w') as f:
+            f.write(' ')
+        print("already done iterations: "+str(step))
+        # Keep training until reaching end condition
         while trn_acc < 1:
+            if (not os.path.isfile("delete_to_halt.txt")):
+                print('stopping due to halt file deleted')
+                break
             batch_xs, batch_ys, idx = vecmp.random_batch(X, Y, batch_size)
 
             # Fit training using batch data
@@ -484,6 +532,8 @@ def main(learning_r=0.001, drop=0.7,train_iters=TRAIN_ITERS,):
         end_epoch = dt.datetime.now()
         print("Optimization Finished, end={} duration={}".format(
             end_epoch, end_epoch - start_epoch))
+        sess.run(tf.assign(doneIters,step))
+        save_model(saver, sess, 'suspend', scale_weights)
 
 
         # Calculate accuracy
@@ -532,7 +582,7 @@ def main(learning_r=0.001, drop=0.7,train_iters=TRAIN_ITERS,):
 if __name__ == "__main__":
     # set command line options
 
-    print('in main')
+    print('in __main__')
     import sys
     print(sys.argv)
 

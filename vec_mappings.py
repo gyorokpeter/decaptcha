@@ -48,16 +48,16 @@ def load_single(path):
     Y = map_words2vec(captcha_text)
     return (1,X,Y)
 
-def load_dataset(folder="./img", max_files=float('inf')):
-    
-    file_list = os.listdir(folder)
-    
+def load_dataset(folder="./img", max_files=float('inf'), file_list=[]):
     # number of files
-    N =len(file_list)
+    N = len(file_list)
+    if (0 == N):
+        raise Exception('file_list is empty')
     
     N = min(max_files,N)
     
     # stores images #N x 19456 (64*304)
+    print('load_dataset: loading {} images '.format(N))
     X = np.zeros([N, constants.IMG_HEIGHT*constants.IMG_WIDTH])
     
     # max captcha text = CAPTCHA_LENGTH chars, at each postion coulb be 0...9A..Za..z_ so 63 different chars
@@ -70,7 +70,9 @@ def load_dataset(folder="./img", max_files=float('inf')):
         if(i>=N):
             break
         
-        path=folder+file
+        if (0 == i%100):
+            print('{}/{} {}'.format(i,N,file))
+        path=folder+'/'+file
         
         success, X0, Y0 = load_single(path)
         
@@ -253,4 +255,5 @@ def map_vec_pos2words(chars_pos):
     return "".join(word)
     
     
-    
+def model_file_name(ds_name, scale_weights):
+    return './models/model_{}_init_{}.ckpt'.format(ds_name,scale_weights)
